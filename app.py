@@ -246,9 +246,23 @@ if st.session_state.get("chatgpt_report"):
     st.markdown(st.session_state["chatgpt_report"])
     st.download_button(
         "보고서 다운로드 (.txt)",
-        data=st.session_state["chatgpt_report"],
+        data=st.session_state["chatgpt_report"].encode("utf-8"),
         file_name="멜팅_대화_원인분석_보고서.txt",
-        mime="text/plain",
+        mime="text/plain; charset=utf-8",
+        key="download_review_report",
+    )
+else:
+    st.info("실제 보고서 다운로드는 API 키를 입력해 검수를 완료한 뒤 사용할 수 있습니다. 다운로드 기능만 먼저 확인하려면 아래 샘플 파일을 받아 보세요.")
+    st.download_button(
+        "다운로드 기능 확인용 샘플 (.txt)",
+        data=(
+            "멜팅 대화 검수기 - 다운로드 기능 확인용 샘플\n"
+            "이 파일은 다운로드 기능을 확인하기 위한 예시이며, 실제 시나리오를 검수한 결과가 아닙니다.\n"
+        ).encode("utf-8"),
+        file_name="멜팅_다운로드_확인용_샘플.txt",
+        mime="text/plain; charset=utf-8",
+        help="샘플 파일이 내려받아지면 브라우저 다운로드는 작동 중입니다. 실제 검수 보고서는 API 키로 검수를 완료한 뒤 받을 수 있습니다.",
+        key="download_sample_report",
     )
 
 with st.expander("결과 해석"):
