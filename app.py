@@ -1,11 +1,5 @@
 from __future__ import annotations
 
-import json
-import os
-import urllib.error
-import urllib.request
-from concurrent.futures import ThreadPoolExecutor
-
 import streamlit as st
 
 
@@ -33,30 +27,19 @@ st.markdown(
 
 st.markdown(
     '<div class="hero"><h1>🫧 멜팅 대화 검수기</h1>'
-    '<p>AI가 캐릭터와 대화하며 맥락 오류를 찾고, 고칠 방향과 매력적인 대화 아이디어를 제안합니다.</p></div>',
+    '<p>ChatGPT와 Claude에게 대화 검수를 요청하고, 두 답변을 한곳에서 비교하세요.</p></div>',
     unsafe_allow_html=True,
 )
 
 with st.sidebar:
-    st.subheader("이중 검수 모델")
-    openai_choices = {
-        "GPT-5.6 Sol · 최고 성능": "gpt-5.6-sol",
-        "GPT-5.6 Terra · 균형형": "gpt-5.6-terra",
-        "GPT-5.6 Luna · 비용 절약": "gpt-5.6-luna",
-    }
-    claude_choices = {
-        "Claude Fable 5.1 · 최고 성능": "claude-fable-5-1",
-        "Claude Opus 5.5 · 복합 추론": "claude-opus-5-5",
-        "Claude Sonnet 5.5 · 균형형": "claude-sonnet-5-5",
-        "Claude Haiku 4.5 · 비용 절약": "claude-haiku-4-5-20251001",
-    }
-    openai_label = st.selectbox("OpenAI 모델", list(openai_choices), index=0)
-    claude_label = st.selectbox("Claude 모델", list(claude_choices), index=0)
-    openai_model = openai_choices[openai_label]
-    claude_model = claude_choices[claude_label]
-    st.divider()
-    st.caption("API 키는 화면에 입력하지 않습니다. 배포 서버의 비밀 설정에 OPENAI_API_KEY와 ANTHROPIC_API_KEY를 등록하세요.")
-    st.caption("양쪽 모델에 캐릭터·시나리오·대화가 각각 전송되며, 사용량에 따라 양쪽 API 비용이 발생합니다.")
+    st.subheader("간편한 이중 검수")
+    st.markdown("""
+    1. 앱에서 검수 프롬프트 생성
+    2. ChatGPT와 Claude에 각각 복사
+    3. 답변을 앱에 붙여 넣어 비교
+
+    API 키 설정 없이 현재 사용 중인 계정으로 진행합니다.
+    """)
 
 
 with st.form("review_form"):
@@ -107,123 +90,9 @@ with st.form("review_form"):
     submitted = st.form_submit_button("검수 시작", type="primary", use_container_width=True)
 
 
-def get_server_secret(name: str) -> str:
-    value = os.environ.get(name, "").strip()
-    if value:
-        return value
-    try:
-        return str(st.secrets.get(name, "")).strip()
-    except Exception:
-        return ""
-
-
-def post_json(url: str, payload: dict, headers: dict[str, str]) -> dict:
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json", **headers},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=240) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        details = exc.read().decode("utf-8", errors="replace")[:1800]
-        raise RuntimeError(f"API 오류 ({exc.code}): {details}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"API에 연결하지 못했습니다: {exc.reason}") from exc
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("API 응답을 JSON으로 읽지 못했습니다.") from exc
-
-
-def request_openai(prompt: str, instructions: str, model_id: str, api_key: str) -> str:
-    data = post_json(
-        "https://api.openai.com/v1/responses",
-        {"model": model_id, "instructions": instructions, "input": prompt, "store": False},
-        {"Authorization": f"Bearer {api_key}"},
-    )
-    if data.get("output_text"):
-        return data["output_text"]
-    text_blocks = [
-        block.get("text", "")
-        for item in data.get("output", [])
-        for block in item.get("content", [])
-        if block.get("type") == "output_text"
-    ]
-    result = "\n".join(part for part in text_blocks if part).strip()
-    if not result:
-        raise RuntimeError("OpenAI API 응답에 텍스트 결과가 없습니다.")
-    return result
-
-
-def request_claude(prompt: str, instructions: str, model_id: str, api_key: str) -> str:
-    data = post_json(
-        "https://api.anthropic.com/v1/messages",
-        {
-            "model": model_id,
-            "max_tokens": 7000,
-            "system": instructions,
-            "messages": [{"role": "user", "content": prompt}],
-        },
-        {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
-    )
-    result = "\n".join(
-        block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
-    ).strip()
-    if not result:
-        raise RuntimeError("Claude API 응답에 텍스트 결과가 없습니다.")
-    return result
-
-
-if submitted:
-    openai_api_key = get_server_secret("OPENAI_API_KEY")
-    anthropic_api_key = get_server_secret("ANTHROPIC_API_KEY")
-    if not character.strip() or not scenario.strip():
-        st.error("캐릭터 설정과 시나리오를 모두 입력해 주세요.")
-    elif not openai_api_key or not anthropic_api_key:
-        st.error("배포 서버 비밀 설정에 OPENAI_API_KEY와 ANTHROPIC_API_KEY를 모두 등록해 주세요.")
-    else:
-        do_simulation = mode in ("AI가 테스트 대화를 진행", "둘 다 진행")
-        if mode == "멜팅 실제 대화 분석" and not transcript.strip():
-            st.error("실제 대화 분석을 선택했다면 대화 내용을 붙여 넣어 주세요.")
-        else:
-            target_audience = audience_custom.strip() if audience == "직접 입력" else audience
-            with st.spinner("두 모델이 각각 검수하고 있어요. 잠시 기다려 주세요…"):
-                try:
-                    simulated = ""
-                    if do_simulation:
-                        sim_prompt = f"""아래 설정을 바탕으로 캐릭터 대화 스트레스 테스트를 진행하세요.
-
-## 캐릭터 설정
-{character}
-
-## 시나리오와 현재 상황
-{scenario}
-
-## 테스트 대화 규칙
-- 당신은 캐릭터를 시험하는 자연스러운 대화 상대입니다. 캐릭터의 대사를 대신 쓰지 마세요.
-- 여러 인물이 있으면 지정된 구성 방식({cast_mode})에 맞춰 1:1 장면과 다인 장면을 섞으세요. 대화 분량상 모두 등장시키기 어렵다면 이번에 확인한 인물만 밝히고, 나머지를 확인했다고 주장하지 마세요.
-- 먼저 대화 상대의 질문/행동을 한 번에 하나씩 쓰고, 캐릭터가 설정에 맞춰 답하는 왕복 대화를 총 {turns}회 구성하세요. 캐릭터 대사는 이름을 붙여 구분하세요.
-- 질문은 앞 장면을 기억해야 답할 수 있는 것, 감정·관계 확인, 주제 전환, 애매한 표현의 의도 확인 등을 섞으세요.
-- 인물마다 말투·성격·알고 있는 정보가 섞이지 않는지, 다른 인물의 기억이나 감정을 잘못 말하지 않는지 시험하세요.
-- 상대의 말에 답하지 않고 무관한 자기소개나 새 주제로 튀는 답변을 유도/발견할 수 있게 현실적인 상황을 만드세요. 일부러 억지 질문을 만들지는 마세요.
-- 성적·폭력적 내용은 설정과 플랫폼의 안전한 범위 안에서만 다루고, 맥락상 불필요하면 피하세요.
-- 출력은 `상대:`와 `캐릭터:`로 구분하고 마지막에 `테스트한 포인트`를 짧게 적으세요.
-"""
-                        simulated = request_openai(
-                            sim_prompt,
-                            "대화 품질 테스트를 수행하는 상대역입니다. 주어진 설정 밖의 사실을 단정하지 말고 한국어로 답하세요.",
-                            openai_model,
-                            openai_api_key,
-                        )
-
-                    material = []
-                    if do_simulation:
-                        material.append("## AI가 만든 테스트 대화\n" + simulated)
-                    if transcript.strip():
-                        material.append("## 사용자가 제공한 실제 대화\n" + transcript.strip())
-                    evidence = "\n\n".join(material) or "테스트 대화를 생성하지 않았습니다."
-                    review_prompt = f"""아래 입력을 검수해 한국어 마크다운 보고서를 작성하세요.
+def make_review_prompt(character: str, scenario: str, audience: str, evidence: str) -> str:
+    evidence_text = evidence or "실제 대화 기록은 제공되지 않았습니다. 아래 테스트 대화 생성 지침을 먼저 수행하세요."
+    return f"""아래 입력을 검수해 한국어 마크다운 보고서를 작성하세요.
 
 ## 캐릭터 설정
 {character}
@@ -232,10 +101,10 @@ if submitted:
 {scenario}
 
 ## 주요 구독자 취향
-{target_audience}
+{audience}
 
 ## 검수할 대화
-{evidence}
+{evidence_text}
 
 ## 평가 기준
 1. 질문 의도와 답변의 직접 관련성 (맥락 이탈, 질문 미응답, 엉뚱한 화제)
@@ -249,73 +118,98 @@ if submitted:
 ### 한눈에 보는 결과
 전체 상태(양호/수정 권장/문제 있음), 가장 중요한 발견 1~3개.
 ### 발견한 오류
-표로 `심각도 | 근거가 된 대사 | 무엇이 어긋났는지 | 왜 문제인지`를 제시하세요. 근거가 있는 경우만 적고, 테스트 대화에서 AI가 만든 상대의 말과 캐릭터의 말을 구별하세요. 실제 대화와 AI 테스트 대화의 출처도 표시하세요. 오류가 없다면 억지로 만들지 마세요.
+표로 `심각도 | 근거가 된 대사 | 무엇이 어긋났는지 | 왜 문제인지`를 제시하세요. 근거가 있는 경우만 적고, AI가 생성한 상대의 말과 캐릭터의 말을 구별하세요. 실제 대화와 가상 테스트 대화의 출처도 표시하세요. 오류가 없다면 억지로 만들지 마세요.
 ### 이렇게 고쳐 보세요
-설정 보강 문구와 프롬프트/대화 운영 개선책을 구분해, 복사해 쓸 수 있는 예시를 주세요. 오류를 캐릭터 성격 탓으로 단정하지 말고 가능한 원인을 나눠 설명하세요.
+설정 보강 문구와 대화 운영 개선책을 구분해, 복사해 쓸 수 있는 예시를 주세요. 원인을 단정하지 말고 가능한 설명을 나눠 주세요.
 ### 구독자 취향에 맞는 대화 아이디어
-{target_audience} 취향을 고려한 장면·대화 소재 3가지와 각각의 기대 감정/분위기를 제안하세요. 특정 취향을 모르면 폭넓은 독자 반응을 단정하지 말고 여러 선택지를 주세요.
+{audience} 취향을 고려한 장면·대화 소재 3가지와 각각의 기대 감정/분위기를 제안하세요. 취향을 모르면 여러 선택지를 주세요.
 ### 추천 분위기와 한 줄 샘플
-이 캐릭터에 어울리는 대화 분위기 2~3개, 짧은 샘플 대사 2개를 제안하세요. 샘플은 원 설정을 존중하고 원문 오류를 실제 멜팅에서 수정했다고 주장하지 마세요.
+캐릭터에 어울리는 대화 분위기 2~3개와 짧은 샘플 대사 2개를 제안하세요.
 ### 다음 검수에서 확인할 점
 재현해 볼 질문 3개를 제안하세요.
 
-과장된 확신을 피하고, 근거가 부족하면 `확인 필요`로 표시하세요. 구독자들이 무엇을 좋아하는지에 관한 제안은 보장된 사실이 아니라 창작 아이디어로 표현하세요.
-인물이 많아 일부만 등장했다면 그 사실을 한눈에 보는 결과에 표시하고, 다음 검수에서 확인할 인물 조합을 제안하세요.
+구독자가 무엇을 좋아하는지에 관한 제안은 보장된 사실이 아니라 창작 아이디어로 표현하세요. 설정 근거가 부족하면 `확인 필요`로 표시하세요.
 """
-                    review_instructions = "당신은 캐릭터 대화의 맥락·연속성·몰입감을 검수하는 독립 편집자입니다. 다른 모델의 결론을 알지 못한다고 가정하고, 근거 중심으로 평가하세요. 설정된 사실과 창작 제안을 구분해 친절하고 구체적인 한국어로 답하세요."
-                    reports = {}
-                    errors = {}
-                    with ThreadPoolExecutor(max_workers=2) as pool:
-                        futures = {
-                            "ChatGPT": pool.submit(
-                                request_openai, review_prompt, review_instructions, openai_model, openai_api_key
-                            ),
-                            "Claude": pool.submit(
-                                request_claude, review_prompt, review_instructions, claude_model, anthropic_api_key
-                            ),
-                        }
-                        for provider, future in futures.items():
-                            try:
-                                reports[provider] = future.result()
-                            except RuntimeError as exc:
-                                errors[provider] = str(exc)
-
-                    if not reports:
-                        raise RuntimeError("두 모델 모두 검수에 실패했습니다.\n" + "\n".join(errors.values()))
-                    st.session_state["last_reports"] = reports
-                    st.session_state["last_errors"] = errors
-                    st.session_state["last_models"] = {
-                        "ChatGPT": openai_model,
-                        "Claude": claude_model,
-                    }
-                    st.session_state["last_simulated"] = simulated
-                except RuntimeError as exc:
-                    st.error(str(exc))
 
 
-if st.session_state.get("last_reports"):
+if submitted:
+    if not character.strip() or not scenario.strip():
+        st.error("캐릭터 설정과 시나리오를 모두 입력해 주세요.")
+    elif mode == "멜팅 실제 대화 분석" and not transcript.strip():
+        st.error("실제 대화 분석을 선택했다면 대화 내용을 붙여 넣어 주세요.")
+    else:
+        do_simulation = mode in ("AI가 테스트 대화를 진행", "둘 다 진행")
+        target_audience = audience_custom.strip() if audience == "직접 입력" else audience
+        extra_test = ""
+        if do_simulation:
+            extra_test = f"""
+
+## 먼저 가상 대화 테스트 진행
+캐릭터 설정과 시나리오를 토대로 자연스러운 상대역의 질문과 캐릭터의 답을 왕복 {turns}회 작성하세요. 여러 인물이 있으면 `{cast_mode}` 방식으로 구성하고 각 대사를 이름으로 표시하세요. 맥락 기억, 질문 의도, 인물별 말투·지식이 유지되는지 확인할 수 있게 질문을 만드세요. 이 대화는 AI가 만든 테스트일 뿐 멜팅의 실제 응답이라고 표현하지 마세요.
+"""
+        base_prompt = make_review_prompt(
+            character.strip(), scenario.strip(), target_audience, transcript.strip()
+        )
+        st.session_state.pop("manual_chatgpt_input", None)
+        st.session_state.pop("manual_claude_input", None)
+        st.session_state.pop("manual_reports", None)
+        st.session_state["manual_prompts"] = {
+            "ChatGPT": (
+                "ChatGPT에서 사용 가능한 가장 성능 높은 모델을 선택한 뒤, 아래 프롬프트 전체를 붙여 넣으세요.\n\n"
+                + extra_test + "\n" + base_prompt
+            ),
+            "Claude": (
+                "Claude에서 사용 가능한 가장 성능 높은 모델을 선택한 뒤, 아래 프롬프트 전체를 붙여 넣으세요.\n\n"
+                + extra_test + "\n" + base_prompt
+            ),
+        }
+
+
+if st.session_state.get("manual_prompts"):
     st.divider()
-    st.subheader("이중 검수 결과")
-    st.caption("두 모델은 서로의 결과를 보지 않고 독립적으로 검수했습니다. 두 보고서를 나란히 비교하고, 같은 지적은 공통 발견으로, 다른 지적은 대화 근거와 대조해 보세요.")
-    if st.session_state.get("last_simulated"):
-        with st.expander("AI 테스트 상대역이 진행한 대화 보기", expanded=True):
-            st.markdown(st.session_state["last_simulated"])
-    report_columns = st.columns(2)
-    for column, provider in zip(report_columns, ("ChatGPT", "Claude")):
+    st.subheader("간편 검수 · API 없이 사용")
+    st.markdown("**1. 프롬프트를 복사해 각 서비스에 붙여 넣으세요.** 응답은 각 서비스의 사용량 제한 안에서 생성됩니다.")
+    link_left, link_right = st.columns(2)
+    with link_left:
+        st.link_button("ChatGPT 열기", "https://chatgpt.com", use_container_width=True)
+    with link_right:
+        st.link_button("Claude 열기", "https://claude.ai", use_container_width=True)
+    prompt_left, prompt_right = st.columns(2)
+    for column, provider in zip((prompt_left, prompt_right), ("ChatGPT", "Claude")):
         with column:
-            st.markdown(f"### {provider} · `{st.session_state['last_models'][provider]}`")
-            if provider in st.session_state["last_reports"]:
-                st.markdown(st.session_state["last_reports"][provider])
-            else:
-                st.error(st.session_state["last_errors"].get(provider, "검수 결과를 받지 못했습니다."))
-    combined_report = "\n\n---\n\n".join(
-        f"# {provider} 독립 검수\n\n모델: `{st.session_state['last_models'][provider]}`\n\n{report}"
-        for provider, report in st.session_state["last_reports"].items()
+            st.markdown(f"#### {provider} 검수 프롬프트")
+            st.code(st.session_state["manual_prompts"][provider], language="markdown")
+    st.markdown("**2. 각 서비스의 답변을 아래에 붙여 넣고 결과 저장을 누르세요.**")
+    with st.form("save_manual_reviews"):
+        manual_chatgpt = st.text_area("ChatGPT 검수 결과", height=260, key="manual_chatgpt_input")
+        manual_claude = st.text_area("Claude 검수 결과", height=260, key="manual_claude_input")
+        manual_saved = st.form_submit_button("두 결과 저장 및 비교", type="primary", use_container_width=True)
+    if manual_saved:
+        if not manual_chatgpt.strip() or not manual_claude.strip():
+            st.error("비교할 수 있도록 ChatGPT와 Claude 답변을 모두 붙여 넣어 주세요.")
+        else:
+            st.session_state["manual_reports"] = {
+                "ChatGPT": manual_chatgpt.strip(),
+                "Claude": manual_claude.strip(),
+            }
+
+if st.session_state.get("manual_reports"):
+    st.divider()
+    st.subheader("ChatGPT · Claude 검수 비교")
+    st.caption("두 답변에서 같은 지적은 공통 발견으로, 의견이 다른 부분은 실제 대화와 설정을 다시 대조해 보세요.")
+    manual_columns = st.columns(2)
+    for column, provider in zip(manual_columns, ("ChatGPT", "Claude")):
+        with column:
+            st.markdown(f"### {provider}")
+            st.markdown(st.session_state["manual_reports"][provider])
+    manual_combined = "\n\n---\n\n".join(
+        f"# {provider} 검수 결과\n\n{report}"
+        for provider, report in st.session_state["manual_reports"].items()
     )
     st.download_button(
-        "두 모델 보고서 다운로드 (.md)",
-        data=combined_report,
-        file_name="멜팅_이중_검수_보고서.md",
+        "비교 결과 다운로드 (.md)",
+        data=manual_combined,
+        file_name="멜팅_간편_이중_검수.md",
         mime="text/markdown",
     )
 
